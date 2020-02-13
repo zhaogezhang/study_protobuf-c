@@ -2664,6 +2664,7 @@ int_range_lookup(unsigned n_ranges, const ProtobufCIntRange *ranges, int value)
 /*********************************************************************************************************
 ** 函数名称: parse_tag_and_wiretype
 ** 功能描述: 从指定的序列化数据中解析出 tag 字段数据和 wiretype 字段数据
+** 注     释: tag 和 wiretype 表示的是 TTLV 数据编码结构中的前两个字段
 ** 输	 入: len - 指定的序列化数据长度
 **         : data - 指定的序列化数据缓冲区地址
 ** 输	 出: tag_out - 用来存储解析出的 tag 数据
@@ -2694,6 +2695,7 @@ parse_tag_and_wiretype(size_t len,
 		*tag_out = tag;
 		return 1;
 	}
+	
 	for (rv = 1; rv < max_rv; rv++) {
 		if (data[rv] & 0x80) {
 			tag |= (data[rv] & 0x7f) << shift;
@@ -2710,16 +2712,35 @@ parse_tag_and_wiretype(size_t len,
 /* sizeof(ScannedMember) must be <= (1UL<<BOUND_SIZEOF_SCANNED_MEMBER_LOG2) */
 #define BOUND_SIZEOF_SCANNED_MEMBER_LOG2 5
 typedef struct _ScannedMember ScannedMember;
+
 /** Field as it's being read. */
+/* 定义了在解析序列化数据过程中需要记录的和消息字段数据相关的信息 */
 struct _ScannedMember {
+    /* 表示的是 TTLV 数据编码结构中第一个 T 字段数据 */
 	uint32_t tag;              /**< Field tag. */
+
+    /* 表示的是 TTLV 数据编码结构中第二个 T 字段数据 */
 	uint8_t wire_type;         /**< Field type. */
+
+	/* 表示的是 TTLV 数据编码结构中 TTL 三个字段数据占用的字节数 */
 	uint8_t length_prefix_len; /**< Prefix length. */
+	
 	const ProtobufCFieldDescriptor *field; /**< Field descriptor. */
 	size_t len;                /**< Field length. */
 	const uint8_t *data;       /**< Pointer to field data. */
 };
 
+/*********************************************************************************************************
+** 函数名称: scan_length_prefixed_data
+** 功能描述: 从指定的序列化数据中解析出 prefix length 字段数据并返回当前解析的消息字段数据字节数
+** 注     释: prefix length 表示的是 TTLV 数据编码结构中 TTL 三个字段数据占用的字节数
+** 输	 入: len - 指定的序列化数据长度
+**         : data - 指定的序列化数据缓冲区地址
+** 输	 出: prefix_len_out - 表示解析出的 TTLV 数据编码结构中的 L 字段数值
+**		   : size_t - 当前解析的消息字段数据字节数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline size_t
 scan_length_prefixed_data(size_t len, const uint8_t *data,
 			  size_t *prefix_len_out)
@@ -2730,12 +2751,14 @@ scan_length_prefixed_data(size_t len, const uint8_t *data,
 	unsigned i;
 	unsigned shift = 0;
 
+    /* 解析按照 base-128 编码方式的序列化数据并存储到 val 变量中 */
 	for (i = 0; i < hdr_max; i++) {
 		val |= ((size_t)data[i] & 0x7f) << shift;
 		shift += 7;
 		if ((data[i] & 0x80) == 0)
 			break;
 	}
+	
 	if (i == hdr_max) {
 		PROTOBUF_C_UNPACK_ERROR("error parsing length for length-prefixed data");
 		return 0;
@@ -2756,6 +2779,15 @@ scan_length_prefixed_data(size_t len, const uint8_t *data,
 	return hdr_len + val;
 }
 
+/*********************************************************************************************************
+** 函数名称: max_b128_numbers
+** 功能描述: 统计指定的序列化数据中包含的变长变量个数
+** 输	 入: len - 指定的序列化数据长度
+**         : data - 指定的序列化数据内容
+** 输	 出: size_t - 指定的序列化数据中包含的变长变量个数
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static size_t
 max_b128_numbers(size_t len, const uint8_t *data)
 {
@@ -2989,6 +3021,18 @@ merge_messages(ProtobufCMessage *earlier_msg,
  * others; the remaining error checking is done by
  * parse_packed_repeated_member().
  */
+/*********************************************************************************************************
+** 函数名称: count_packed_elements
+** 功能描述: 统计指定类型和长度的序列化数据中包含的元素个数
+** 输	 入: type - 指定的序列化数据类型
+**         : len - 指定的序列化数据长度
+**         : data - 指定的序列化数据内容
+** 输	 出: count_out - 指定的序列化数据中包含的元素个数
+**         : TRUE - 统计成功
+**         : FALSE - 统计失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static protobuf_c_boolean
 count_packed_elements(ProtobufCType type,
 		      size_t len, const uint8_t *data, size_t *count_out)
@@ -3033,6 +3077,15 @@ count_packed_elements(ProtobufCType type,
 	}
 }
 
+/*********************************************************************************************************
+** 函数名称: parse_uint32
+** 功能描述: 解析按照 base-128 编码的指定的 uint32_t 类型的序列化数据内容并返回解析结果
+** 输	 入: len - 指定的序列化数据长度
+**         : data - 指定的序列化数据内容
+** 输	 出: uint32_t - 成功解析的 uint32_t 类型变量值
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline uint32_t
 parse_uint32(unsigned len, const uint8_t *data)
 {
@@ -3051,12 +3104,29 @@ parse_uint32(unsigned len, const uint8_t *data)
 	return rv;
 }
 
+/*********************************************************************************************************
+** 函数名称: parse_int32
+** 功能描述: 解析按照 base-128 编码的指定的 int32_t 类型的序列化数据内容并返回解析结果
+** 输	 入: len - 指定的序列化数据长度
+**         : data - 指定的序列化数据内容
+** 输	 出: uint32_t - 成功解析的 int32_t 类型变量值
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline uint32_t
 parse_int32(unsigned len, const uint8_t *data)
 {
 	return parse_uint32(len, data);
 }
 
+/*********************************************************************************************************
+** 函数名称: unzigzag32
+** 功能描述: 解析按照 zigzag 编码的指定的 uint32_t 类型的序列化数据内容并返回解析结果
+** 输	 入: uint32_t - 指定的序列化数据
+** 输	 出: int32_t - 成功解析的 int32_t 类型变量值
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline int32_t
 unzigzag32(uint32_t v)
 {
@@ -3066,6 +3136,15 @@ unzigzag32(uint32_t v)
 		return v >> 1;
 }
 
+/*********************************************************************************************************
+** 函数名称: parse_fixed_uint32
+** 功能描述: 把指定的小端格式的序列化数据转换成与其对应的 uint32_t 类型的主机大小端格式变量值
+**         : 功能类似于 letoh32 函数
+** 输	 入: data - 指定的小端格式的序列化数据
+** 输	 出: uint32_t - 主机大小端格式的 uint32_t 类型变量值
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline uint32_t
 parse_fixed_uint32(const uint8_t *data)
 {
@@ -3081,6 +3160,15 @@ parse_fixed_uint32(const uint8_t *data)
 #endif
 }
 
+/*********************************************************************************************************
+** 函数名称: parse_uint64
+** 功能描述: 解析按照 base-128 编码的指定的 uint64_t 类型的序列化数据内容并返回解析结果
+** 输	 入: len - 指定的序列化数据长度
+**         : data - 指定的序列化数据内容
+** 输	 出: uint64_t - 成功解析的 uint64_t 类型变量值
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static uint64_t
 parse_uint64(unsigned len, const uint8_t *data)
 {
@@ -3101,6 +3189,14 @@ parse_uint64(unsigned len, const uint8_t *data)
 	return rv;
 }
 
+/*********************************************************************************************************
+** 函数名称: unzigzag64
+** 功能描述: 解析按照 zigzag 编码的指定的 uint64_t 类型的序列化数据内容并返回解析结果
+** 输	 入: uint64_t - 指定的序列化数据
+** 输	 出: int64_t - 成功解析的 int64_t 类型变量值
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline int64_t
 unzigzag64(uint64_t v)
 {
@@ -3110,6 +3206,15 @@ unzigzag64(uint64_t v)
 		return v >> 1;
 }
 
+/*********************************************************************************************************
+** 函数名称: parse_fixed_uint64
+** 功能描述: 把指定的小端格式的序列化数据转换成与其对应的 uint64_t 类型的主机大小端格式变量值
+**         : 功能类似于 letoh64 函数
+** 输	 入: data - 指定的小端格式的序列化数据
+** 输	 出: uint64_t - 主机大小端格式的 uint64_t 类型变量值
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static inline uint64_t
 parse_fixed_uint64(const uint8_t *data)
 {
@@ -3123,6 +3228,15 @@ parse_fixed_uint64(const uint8_t *data)
 #endif
 }
 
+/*********************************************************************************************************
+** 函数名称: parse_boolean
+** 功能描述: 解析按照 base-128 编码的指定的 boolean 类型的序列化数据内容并返回解析结果
+** 输	 入: len - 指定的序列化数据长度
+**         : data - 指定的序列化数据内容
+** 输	 出: protobuf_c_boolean - 成功解析的 boolean 类型变量值
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static protobuf_c_boolean
 parse_boolean(unsigned len, const uint8_t *data)
 {
@@ -3133,6 +3247,18 @@ parse_boolean(unsigned len, const uint8_t *data)
 	return FALSE;
 }
 
+/*********************************************************************************************************
+** 函数名称: parse_required_member
+** 功能描述: 解析指定的消息字段的数据内容并存储到指定的缓冲区中
+** 输	 入: scanned_member - 指定的消息字段描述结构指针
+**         : allocator - 指定的内存分配器指针
+**         : maybe_clear - 
+** 输	 出: member - 指定的缓冲区指针
+**         : TRUE - 解析成功
+**         : FALSE - 解析失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static protobuf_c_boolean
 parse_required_member(ScannedMember *scanned_member,
 		      void *member,
@@ -3267,6 +3393,18 @@ parse_required_member(ScannedMember *scanned_member,
 	return FALSE;
 }
 
+/*********************************************************************************************************
+** 函数名称: parse_oneof_member
+** 功能描述: 解析指定的 oneof 类型的消息字段的数据内容并存储到指定的缓冲区中
+** 输	 入: scanned_member - 指定的消息字段描述结构指针
+**         : message - 指定的消息实例结构指针
+**         : allocator - 指定的内存分配器指针
+** 输	 出: member - 指定的缓冲区指针
+**         : TRUE - 解析成功
+**         : FALSE - 解析失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static protobuf_c_boolean
 parse_oneof_member (ScannedMember *scanned_member,
 		    void *member,
@@ -3280,18 +3418,23 @@ parse_oneof_member (ScannedMember *scanned_member,
 	if (*oneof_case != 0) {
 		const ProtobufCFieldDescriptor *old_field;
 		size_t el_size;
+	
 		/* lookup field */
+		/* 在指定的 ProtobufCIntRange 数值中查找和指定的数值对应的索引值 */
 		int field_index =
 			int_range_lookup(message->descriptor->n_field_ranges,
 					 message->descriptor->field_ranges,
 					 *oneof_case);
+		
 		if (field_index < 0)
 			return FALSE;
 		old_field = message->descriptor->fields + field_index;
+
+		/* 计算指定的类型的消息字段数据在内存中占用的字节数 */
 		el_size = sizeof_elt_in_repeated_array(old_field->type);
 
 		switch (old_field->type) {
-	        case PROTOBUF_C_TYPE_STRING: {
+	    case PROTOBUF_C_TYPE_STRING: {
 			char **pstr = member;
 			const char *def = old_field->default_value;
 			if (*pstr != NULL && *pstr != def)
@@ -3321,14 +3464,28 @@ parse_oneof_member (ScannedMember *scanned_member,
 
 		memset (member, 0, el_size);
 	}
+
+	/* 解析指定的消息字段的数据内容并存储到指定的缓冲区中 */
 	if (!parse_required_member (scanned_member, member, allocator, TRUE))
 		return FALSE;
 
+    /* 存储当前解析的 oneof 类型消息字段的 tag 数据到指定的消息字段描述结构 */
 	*oneof_case = scanned_member->tag;
 	return TRUE;
 }
 
-
+/*********************************************************************************************************
+** 函数名称: parse_optional_member
+** 功能描述: 解析指定的 optional 类型的消息字段的数据内容并存储到指定的缓冲区中
+** 输	 入: scanned_member - 指定的消息字段描述结构指针
+**         : message - 指定的消息实例结构指针
+**         : allocator - 指定的内存分配器指针
+** 输	 出: member - 指定的缓冲区指针
+**         : TRUE - 解析成功
+**         : FALSE - 解析失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static protobuf_c_boolean
 parse_optional_member(ScannedMember *scanned_member,
 		      void *member,
@@ -3344,6 +3501,19 @@ parse_optional_member(ScannedMember *scanned_member,
 	return TRUE;
 }
 
+/*********************************************************************************************************
+** 函数名称: parse_repeated_member
+** 功能描述: 解析指定的 repeated 类型的消息字段的数据内容并存储到指定的缓冲区中
+** 注     释: 这个函数用来解析 repeated 消息字段数据“没”设置 PROTOBUF_C_FIELD_FLAG_PACKED 标志的数据
+** 输	 入: scanned_member - 指定的消息字段描述结构指针
+**         : message - 指定的消息实例结构指针
+**         : allocator - 指定的内存分配器指针
+** 输	 出: member - 指定的缓冲区指针
+**         : TRUE - 解析成功
+**         : FALSE - 解析失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static protobuf_c_boolean
 parse_repeated_member(ScannedMember *scanned_member,
 		      void *member,
@@ -3364,6 +3534,16 @@ parse_repeated_member(ScannedMember *scanned_member,
 	return TRUE;
 }
 
+/*********************************************************************************************************
+** 函数名称: scan_varint
+** 功能描述: 解析按照 base-128 编码的指定的 varint 类型的序列化数据内容并返回解析结果
+** 注     释: varint 可表示的数据类型为：int32, int64, uint32, uint64, sint32, sint64, bool, enum
+** 输	 入: len - 指定的序列化数据长度
+**         : data - 指定的序列化数据内容
+** 输	 出: unsigned - 成功解析的 varint 类型变量值
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static unsigned
 scan_varint(unsigned len, const uint8_t *data)
 {
@@ -3378,6 +3558,18 @@ scan_varint(unsigned len, const uint8_t *data)
 	return i + 1;
 }
 
+/*********************************************************************************************************
+** 函数名称: parse_packed_repeated_member
+** 功能描述: 解析指定的 repeated 类型的消息字段的数据内容并存储到指定的缓冲区中
+** 注     释: 这个函数用来解析 repeated 消息字段数据设置 PROTOBUF_C_FIELD_FLAG_PACKED 标志的数据
+** 输	 入: scanned_member - 指定的消息字段描述结构指针
+**         : message - 指定的消息实例结构指针
+** 输	 出: member - 指定的缓冲区指针
+**         : TRUE - 解析成功
+**         : FALSE - 解析失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static protobuf_c_boolean
 parse_packed_repeated_member(ScannedMember *scanned_member,
 			     void *member,
@@ -3506,6 +3698,15 @@ no_unpacking_needed:
 #endif
 }
 
+/*********************************************************************************************************
+** 函数名称: is_packable_type
+** 功能描述: 判断指定的 ProtobufC 数据类型是否是 packable 类型
+** 输	 入: type - 指定的 ProtobufC 数据类型
+** 输	 出: TRUE - 是 packable 类型
+**         : FALSE - 不是 packable 类型
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static protobuf_c_boolean
 is_packable_type(ProtobufCType type)
 {
@@ -3515,6 +3716,17 @@ is_packable_type(ProtobufCType type)
 		type != PROTOBUF_C_TYPE_MESSAGE;
 }
 
+/*********************************************************************************************************
+** 函数名称: parse_member
+** 功能描述: 解析指定的消息字段的数据内容并存储到指定的消息描述符中
+** 输	 入: scanned_member - 指定的消息字段描述结构指针
+**         : message - 指定的消息实例结构指针
+**         : allocator - 指定的内存分配器指针
+** 输	 出: TRUE - 解析成功
+**         : FALSE - 解析失败
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static protobuf_c_boolean
 parse_member(ScannedMember *scanned_member,
 	     ProtobufCMessage *message,
@@ -3536,6 +3748,7 @@ parse_member(ScannedMember *scanned_member,
 		memcpy(ufield->data, scanned_member->data, ufield->len);
 		return TRUE;
 	}
+	
 	member = (char *) message + field->offset;
 	switch (field->label) {
 	case PROTOBUF_C_LABEL_REQUIRED:
@@ -3575,6 +3788,15 @@ parse_member(ScannedMember *scanned_member,
  * for old code, and which would be useful to support allocating
  * descriptors dynamically).
  */
+/*********************************************************************************************************
+** 函数名称: message_init_generic
+** 功能描述: 根据指定的消息描述符信息初始化指定的消息实例数据结构
+** 输	 入: desc - 指定的消息描述符指针
+**         : message - 指定的消息实例结构指针
+** 输	 出: 
+** 全局变量: 
+** 调用模块: 
+*********************************************************************************************************/
 static void
 message_init_generic(const ProtobufCMessageDescriptor *desc,
 		     ProtobufCMessage *message)
@@ -3733,7 +3955,7 @@ protobuf_c_message_unpack(const ProtobufCMessageDescriptor *desc,
 	else
 		message_init_generic(desc, rv);
 
-    /* 根据需要解析的序列化数据初始化解析过程中需要的数据结构，比如 scanned_member_slabs */
+    /* 根据需要解析的序列化数据初始化解析过程中需要的数据结构，比如 ScannedMember 和 ProtobufCMessage */
 	while (rem > 0) {
 		uint32_t tag;
 		ProtobufCWireType wire_type;
@@ -3749,6 +3971,7 @@ protobuf_c_message_unpack(const ProtobufCMessageDescriptor *desc,
 						(unsigned) (at - data));
 			goto error_cleanup_during_scan;
 		}
+		
 		/*
 		 * \todo Consider optimizing for field[1].id == tag, if field[1]
 		 * exists!
@@ -3937,6 +4160,7 @@ protobuf_c_message_unpack(const ProtobufCMessageDescriptor *desc,
 		ScannedMember *slab = scanned_member_slabs[i_slab];
 
 		for (j = 0; j < max; j++) {
+			/* 解析指定的消息字段的数据内容并存储到指定的消息描述符中 */
 			if (!parse_member(slab + j, rv, allocator)) {
 				PROTOBUF_C_UNPACK_ERROR("error parsing member %s of %s",
 							slab->field ? slab->field->name : "*unknown-field*",
@@ -3956,6 +4180,7 @@ protobuf_c_message_unpack(const ProtobufCMessageDescriptor *desc,
 	return rv;
 
 error_cleanup:
+	/* 释放指定的 ProtobufC 消息实例结构占用的内存资源 */
 	protobuf_c_message_free_unpacked(rv, allocator);
 	for (j = 1; j <= which_slab; j++)
 		do_free(allocator, scanned_member_slabs[j]);
